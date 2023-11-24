@@ -1,5 +1,12 @@
 # Changelog
 
+## \[2.0.0-alpha.8]
+
+### Dependencies
+
+- Upgraded to `os@2.0.0-alpha.5`
+- Upgraded to `updater@2.0.0-alpha.5`
+
 ## \[2.0.0-alpha.7]
 
 ### Dependencies

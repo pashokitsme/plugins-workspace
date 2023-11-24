@@ -1,5 +1,12 @@
 # Changelog
 
+## \[2.0.0-alpha.6]
+
+### Dependencies
+
+- Upgraded to `fs-js@2.0.0-alpha.4`
+- Upgraded to `os-js@2.0.0-alpha.5`
+
 ## \[2.0.0-alpha.5]
 
 ### Dependencies
