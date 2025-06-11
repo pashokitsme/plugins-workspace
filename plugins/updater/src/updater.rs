@@ -57,7 +57,7 @@ pub enum RemoteReleaseInner {
 /// Information about a release returned by the remote update server.
 ///
 /// This type can have one of two shapes: Server Format (Dynamic Format) and Static Format.
-#[derive(Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RemoteRelease {
     /// Version to install.
     pub version: Version,
