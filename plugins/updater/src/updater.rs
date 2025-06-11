@@ -57,7 +57,7 @@ pub enum RemoteReleaseInner {
 /// Information about a release returned by the remote update server.
 ///
 /// This type can have one of two shapes: Server Format (Dynamic Format) and Static Format.
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Debug, Clone)]
 pub struct RemoteRelease {
     /// Version to install.
     pub version: Version,
@@ -65,7 +65,7 @@ pub struct RemoteRelease {
     pub notes: Option<String>,
     /// Release date.
     pub pub_date: Option<OffsetDateTime>,
-    /// Release data.
+    /// Release data
     pub data: RemoteReleaseInner,
 }
 
@@ -1264,23 +1264,57 @@ pub fn extract_path_from_executable(executable_path: &Path) -> Result<PathBuf> {
     Ok(extract_path)
 }
 
+#[derive(Serialize, Deserialize)]
+struct InnerRemoteRelease {
+    #[serde(alias = "name", deserialize_with = "parse_version")]
+    version: Version,
+    notes: Option<String>,
+    pub_date: Option<String>,
+    platforms: Option<HashMap<String, ReleaseManifestPlatform>>,
+    // dynamic platform response
+    url: Option<Url>,
+    signature: Option<String>,
+}
+
+impl Serialize for RemoteRelease {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let release = InnerRemoteRelease {
+            version: self.version.clone(),
+            notes: self.notes.clone(),
+            pub_date: self.pub_date.map(|d| d.to_string()),
+            platforms: match &self.data {
+                RemoteReleaseInner::Static { platforms } => Some(platforms.clone()),
+                RemoteReleaseInner::Dynamic(platform) => Some(HashMap::from([(
+                    target().expect("unsupported platform"),
+                    platform.clone(),
+                )])),
+            },
+            url: match &self.data {
+                RemoteReleaseInner::Static { platforms } => platforms
+                    .get(&target().expect("unsupported platform"))
+                    .map(|p| p.url.clone()),
+                RemoteReleaseInner::Dynamic(platform) => Some(platform.url.clone()),
+            },
+            signature: match &self.data {
+                RemoteReleaseInner::Static { platforms } => platforms
+                    .get(&target().expect("unsupported platform"))
+                    .map(|p| p.signature.clone()),
+                RemoteReleaseInner::Dynamic(platform) => Some(platform.signature.clone()),
+            },
+        };
+
+        release.serialize(serializer)
+    }
+}
+
 impl<'de> Deserialize<'de> for RemoteRelease {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        struct InnerRemoteRelease {
-            #[serde(alias = "name", deserialize_with = "parse_version")]
-            version: Version,
-            notes: Option<String>,
-            pub_date: Option<String>,
-            platforms: Option<HashMap<String, ReleaseManifestPlatform>>,
-            // dynamic platform response
-            url: Option<Url>,
-            signature: Option<String>,
-        }
-
         let release = InnerRemoteRelease::deserialize(deserializer)?;
 
         let pub_date = if let Some(date) = release.pub_date {
