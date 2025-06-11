@@ -33,7 +33,7 @@ pub(crate) struct Metadata {
     version: String,
     date: Option<String>,
     body: Option<String>,
-    raw_json: serde_json::Value,
+    // raw_json: serde_json::Value,
 }
 
 struct DownloadedBytes(pub Vec<u8>);
@@ -85,7 +85,7 @@ pub(crate) async fn check<R: Runtime>(
             version: update.version.clone(),
             date: formatted_date,
             body: update.body.clone(),
-            raw_json: update.raw_json.clone(),
+            // raw_json: update.raw_json.clone(),
             rid: webview.resources_table().add(update),
         };
         Ok(Some(metadata))

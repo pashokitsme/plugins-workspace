@@ -423,7 +423,7 @@ impl Updater {
 
                         let update_response: serde_json::Value = res.json().await?;
                         log::debug!("update response: {update_response:?}");
-                        raw_json = Some(update_response.clone());
+                        // raw_json = Some(update_response.clone());
                         match serde_json::from_value::<RemoteRelease>(update_response)
                             .map_err(Into::into)
                         {
@@ -467,32 +467,36 @@ impl Updater {
         };
 
         let update = if should_update {
-            Some(Update {
-                run_on_main_thread: self.run_on_main_thread.clone(),
-                config: self.config.clone(),
-                on_before_exit: self.on_before_exit.clone(),
-                app_name: self.app_name.clone(),
-                current_version: self.current_version.to_string(),
-                target: self.target.clone(),
-                extract_path: self.extract_path.clone(),
-                version: release.version.to_string(),
-                date: release.pub_date,
-                download_url: release.download_url(&self.json_target)?.to_owned(),
-                signature: release.signature(&self.json_target)?.to_owned(),
-                body: release.notes,
-                raw_json: raw_json.unwrap(),
-                timeout: None,
-                proxy: self.proxy.clone(),
-                headers: self.headers.clone(),
-                installer_args: self.installer_args.clone(),
-                current_exe_args: self.current_exe_args.clone(),
-                configure_client: self.configure_client.clone(),
-            })
+            Some(self.update_from_release(release)?)
         } else {
             None
         };
 
         Ok(update)
+    }
+
+    pub fn update_from_release(&self, release: RemoteRelease) -> Result<Update> {
+        Ok(Update {
+            run_on_main_thread: self.run_on_main_thread.clone(),
+            config: self.config.clone(),
+            on_before_exit: self.on_before_exit.clone(),
+            app_name: self.app_name.clone(),
+            current_version: self.current_version.to_string(),
+            target: self.target.clone(),
+            extract_path: self.extract_path.clone(),
+            version: release.version.to_string(),
+            date: release.pub_date,
+            download_url: release.download_url(&self.json_target)?.to_owned(),
+            signature: release.signature(&self.json_target)?.to_owned(),
+            body: release.notes.clone(),
+            timeout: None,
+            proxy: self.proxy.clone(),
+            headers: self.headers.clone(),
+            installer_args: self.installer_args.clone(),
+            current_exe_args: self.current_exe_args.clone(),
+            configure_client: self.configure_client.clone(),
+            remote_release: release,
+        })
     }
 }
 
@@ -518,7 +522,8 @@ pub struct Update {
     /// Signature announced
     pub signature: String,
     /// The raw version of server's JSON response. Useful if the response contains additional fields that the updater doesn't handle.
-    pub raw_json: serde_json::Value,
+    // pub raw_json: serde_json::Value,
+    pub remote_release: RemoteRelease,
     /// Request timeout
     pub timeout: Option<Duration>,
     /// Request proxy
@@ -1317,7 +1322,7 @@ where
 }
 
 // Validate signature
-fn verify_signature(data: &[u8], release_signature: &str, pub_key: &str) -> Result<bool> {
+pub fn verify_signature(data: &[u8], release_signature: &str, pub_key: &str) -> Result<bool> {
     // we need to convert the pub key
     let pub_key_decoded = base64_to_string(pub_key)?;
     let public_key = PublicKey::decode(&pub_key_decoded)?;
@@ -1329,7 +1334,7 @@ fn verify_signature(data: &[u8], release_signature: &str, pub_key: &str) -> Resu
     Ok(true)
 }
 
-fn base64_to_string(base64_string: &str) -> Result<String> {
+pub fn base64_to_string(base64_string: &str) -> Result<String> {
     let decoded_string = &base64::engine::general_purpose::STANDARD.decode(base64_string)?;
     let result = std::str::from_utf8(decoded_string)
         .map_err(|_| Error::SignatureUtf8(base64_string.into()))?
