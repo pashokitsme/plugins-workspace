@@ -517,7 +517,10 @@ impl Updater {
         download_url: &Url,
         signature: &str,
     ) -> Result<Update> {
-        let target = self.target.clone().expect("no target specified");
+        let target = self
+            .target
+            .clone()
+            .unwrap_or(updater_os().map(From::from).ok_or(Error::UnsupportedOs)?);
 
         Ok(Update {
             run_on_main_thread: self.run_on_main_thread.clone(),
