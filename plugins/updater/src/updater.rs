@@ -365,9 +365,8 @@ pub struct Updater {
 }
 
 impl Updater {
-    pub fn header(&mut self, key: HeaderName, value: HeaderValue) -> Result<()> {
+    pub fn header(&mut self, key: HeaderName, value: HeaderValue) {
         self.headers.insert(key, value);
-        Ok(())
     }
 
     pub async fn check(&self) -> Result<Option<Update>> {
