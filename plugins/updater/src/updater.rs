@@ -365,6 +365,11 @@ pub struct Updater {
 }
 
 impl Updater {
+    pub fn header(&mut self, key: HeaderName, value: HeaderValue) -> Result<()> {
+        self.headers.insert(key, value);
+        Ok(())
+    }
+
     pub async fn check(&self) -> Result<Option<Update>> {
         // we want JSON only
         let mut headers = self.headers.clone();
