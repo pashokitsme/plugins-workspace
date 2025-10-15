@@ -4,6 +4,7 @@
 
 use serde::{Serialize, Serializer};
 use thiserror::Error;
+use url::Url;
 
 /// All errors that can occur while running the updater.
 #[derive(Debug, Error)]
@@ -24,6 +25,8 @@ pub enum Error {
     /// Could not fetch a valid response from the server.
     #[error("Could not fetch a valid release JSON from the remote")]
     ReleaseNotFound,
+    #[error("server returned a non-success status code {status}: {body}")]
+    ServerError { status: u16, body: String },
     /// Unsupported app architecture.
     #[error("Unsupported application architecture, expected one of `x86`, `x86_64`, `arm` or `aarch64`.")]
     UnsupportedArch,
@@ -48,8 +51,8 @@ pub enum Error {
     )]
     TargetsNotFound(Vec<String>),
     /// Download failed
-    #[error("`{0}`")]
-    Network(String),
+    #[error("download failed with status {status} for url {url}")]
+    Network { status: u16, url: Url },
     /// `minisign_verify` errors.
     #[error(transparent)]
     Minisign(#[from] minisign_verify::Error),

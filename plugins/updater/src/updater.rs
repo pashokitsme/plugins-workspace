@@ -477,9 +477,17 @@ impl Updater {
                             }
                         }
                     } else {
+                        let status = res.status();
+                        let body = res.text().await?;
+
                         log::error!(
-                            "update endpoint did not respond with a successful status code"
+                            "update endpoint did not respond with a successful status code: {body}",
                         );
+
+                        return Err(Error::ServerError {
+                            status: status.into(),
+                            body,
+                        });
                     }
                 }
                 Err(err) => {
@@ -662,10 +670,10 @@ impl Update {
             .await?;
 
         if !response.status().is_success() {
-            return Err(Error::Network(format!(
-                "Download request failed with status: {}",
-                response.status()
-            )));
+            return Err(Error::Network {
+                status: response.status().into(),
+                url: self.download_url.clone(),
+            });
         }
 
         let content_length: Option<u64> = response
