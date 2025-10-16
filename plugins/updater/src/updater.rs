@@ -369,6 +369,10 @@ impl Updater {
         self.headers.insert(key, value);
     }
 
+    pub fn remove_header(&mut self, key: HeaderName) {
+        self.headers.remove(key);
+    }
+
     pub async fn check(&self) -> Result<Option<Update>> {
         // we want JSON only
         let mut headers = self.headers.clone();
