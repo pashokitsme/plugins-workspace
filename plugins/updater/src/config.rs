@@ -219,3 +219,21 @@ pub(crate) fn validate_endpoints(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::WindowsUpdateInstallMode;
+
+    // `/R` makes the NSIS installer relaunch the app, so it must only come from
+    // `nsis_restart_after_install_args`, which `Update::install_without_relaunch` skips.
+    #[test]
+    fn nsis_base_args_do_not_relaunch_the_app() {
+        for mode in [
+            WindowsUpdateInstallMode::BasicUi,
+            WindowsUpdateInstallMode::Quiet,
+            WindowsUpdateInstallMode::Passive,
+        ] {
+            assert!(!mode.nsis_args().contains(&"/R"), "{mode}");
+        }
+    }
+}

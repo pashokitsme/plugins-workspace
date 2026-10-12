@@ -990,6 +990,20 @@ impl Update {
         self.install_inner(bytes)
     }
 
+    /// Installs the updater package like [`Self::install`], but never relaunches the app
+    /// afterwards, regardless of [`Self::restart_after_install`].
+    ///
+    /// ## Platform-specific:
+    ///
+    /// - **Windows:** This function exits the app after launching the updater installer
+    ///   successfully. The NSIS installer runs without `/R` and the MSI installer without
+    ///   `AUTOLAUNCHAPP=True`, so the new version is not started once the installation finishes.
+    /// - **macOS / Linux:** Same as [`Self::install`]: the app is never relaunched there, you
+    ///   need to relaunch it to run the newly installed version.
+    pub fn install_without_relaunch(&self, bytes: impl AsRef<[u8]>) -> Result<()> {
+        self.clone().restart_after_install(false).install(bytes)
+    }
+
     /// Downloads and installs the updater package
     ///
     /// ## Platform-specific:
