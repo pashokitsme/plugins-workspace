@@ -154,6 +154,9 @@ pub type OnBeforeRequest = Arc<dyn Fn(ClientBuilder) -> ClientBuilder + Send + S
 /// It receives the current application version and the remote release,
 /// and returns `true` when the release should be treated as an update.
 pub type VersionComparator = Arc<dyn Fn(Version, RemoteRelease) -> bool + Send + Sync>;
+/// Function that decides whether the version a package was signed for and the announced version
+/// name the same release. See [`UpdaterBuilder::signed_version_comparator`].
+pub type SignedVersionComparator = Arc<dyn Fn(&str, &str) -> bool + Send + Sync + 'static>;
 #[cfg(target_os = "macos")]
 type MainThreadClosure = Box<dyn FnOnce() + Send + Sync + 'static>;
 #[cfg(target_os = "macos")]
@@ -165,6 +168,7 @@ type RunOnMainThread = Arc<dyn Fn(MainThreadClosure) -> tauri::Result<()> + Send
 struct UpdaterContext {
     config: Config,
     configure_client: Option<OnBeforeRequest>,
+    signed_version_comparator: Option<SignedVersionComparator>,
     #[cfg(target_os = "macos")]
     run_on_main_thread: RunOnMainThread,
     /// App name, used for creating named tempfiles
@@ -214,6 +218,7 @@ impl UpdaterBuilder {
                     .unwrap_or_default(),
                 config,
                 configure_client: None,
+                signed_version_comparator: None,
                 #[cfg(target_os = "macos")]
                 run_on_main_thread,
                 #[cfg(windows)]
@@ -429,6 +434,20 @@ impl UpdaterBuilder {
         f: F,
     ) -> Self {
         self.context.configure_client.replace(Arc::new(f));
+        self
+    }
+
+    /// Sets the function that decides whether the version recorded in the package signature
+    /// (first argument) and the version announced by the endpoint (second argument) name the same
+    /// release, replacing the default equality check. It exists for signatures whose version is
+    /// spelled differently from the announced one, e.g. with a platform tag.
+    ///
+    /// Returning `true` unconditionally defeats the downgrade protection of the signed version.
+    pub fn signed_version_comparator<F: Fn(&str, &str) -> bool + Send + Sync + 'static>(
+        mut self,
+        f: F,
+    ) -> Self {
+        self.context.signed_version_comparator.replace(Arc::new(f));
         self
     }
 
@@ -971,6 +990,7 @@ impl Update {
             &self.context.config.pubkey,
             &self.version,
             self.context.config.require_signed_version,
+            self.context.signed_version_comparator.as_ref(),
         )
     }
 
@@ -2051,6 +2071,7 @@ fn verify_signature_for_version(
     pub_key: &str,
     announced_version: &str,
     require_signed_version: bool,
+    signed_version_comparator: Option<&SignedVersionComparator>,
 ) -> Result<()> {
     let signature = verify_minisign(data, release_signature, pub_key)?;
 
@@ -2061,6 +2082,7 @@ fn verify_signature_for_version(
         signature.trusted_comment(),
         announced_version,
         require_signed_version,
+        signed_version_comparator,
     )
 }
 
@@ -2074,6 +2096,7 @@ fn verify_signed_version(
     trusted_comment: &str,
     announced_version: &str,
     require_signed_version: bool,
+    signed_version_comparator: Option<&SignedVersionComparator>,
 ) -> Result<()> {
     let Some(signed_version) = signed_version(trusted_comment) else {
         // Signatures produced before the Tauri CLI started recording the version carry none, so
@@ -2088,12 +2111,15 @@ fn verify_signed_version(
 
     // compare as semver so that equivalent spellings like `1.2.3` and `v1.2.3` match, falling
     // back to a literal comparison for versions that are not valid semver
-    let matches = match (
-        Version::from_str(signed_version.trim_start_matches('v')),
-        Version::from_str(announced_version.trim_start_matches('v')),
-    ) {
-        (Ok(signed), Ok(announced)) => signed == announced,
-        _ => signed_version == announced_version,
+    let matches = match signed_version_comparator {
+        Some(comparator) => comparator(signed_version, announced_version),
+        None => match (
+            Version::from_str(signed_version.trim_start_matches('v')),
+            Version::from_str(announced_version.trim_start_matches('v')),
+        ) {
+            (Ok(signed), Ok(announced)) => signed == announced,
+            _ => signed_version == announced_version,
+        },
     };
 
     if matches {
@@ -2469,6 +2495,42 @@ mod offline_tests {
     }
 
     #[test]
+    fn signed_version_comparator_reaches_every_update() {
+        // the package is signed for 2.0.0 but announced as 3.0.0
+        let mut metadata = manifest();
+        metadata["version"] = json!("3.0.0");
+        let release: RemoteRelease = serde_json::from_value(metadata.clone()).unwrap();
+        let url: Url = "https://example.invalid/package".parse().unwrap();
+
+        let default = updater();
+        let restored = default.restore_update(metadata.clone()).unwrap().unwrap();
+        let built = default
+            .update_from_release(&release, &url, &encode(SIGNATURE))
+            .unwrap();
+        for update in [restored, built] {
+            assert!(matches!(
+                update.verify(b"test"),
+                Err(Error::SignedVersionMismatch { .. })
+            ));
+        }
+
+        let custom = builder()
+            .signed_version_comparator(|signed, announced| {
+                signed == "2.0.0" && announced == "3.0.0"
+            })
+            .build()
+            .unwrap();
+        let restored = custom.restore_update(metadata).unwrap().unwrap();
+        let built = custom
+            .update_from_release(&release, &url, &encode(SIGNATURE))
+            .unwrap();
+        for update in [restored, built] {
+            update.verify(b"test").unwrap();
+            assert!(update.verify(b"tampered").is_err());
+        }
+    }
+
+    #[test]
     fn restored_updates_reject_a_version_the_package_was_not_signed_for() {
         let mut metadata = manifest();
         metadata["version"] = json!("3.0.0");
@@ -2629,7 +2691,7 @@ mod offline_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{signed_version, verify_signed_version};
+    use super::{SignedVersionComparator, signed_version, verify_signed_version};
     use crate::error::Error;
 
     const CURRENT: &str = "timestamp:1700000000\tfile:app_1.2.3_x64.msi.zip\tversion:1.2.3";
@@ -2646,16 +2708,16 @@ mod tests {
 
     #[test]
     fn accepts_a_matching_version() {
-        assert!(verify_signed_version(CURRENT, "1.2.3", true).is_ok());
-        assert!(verify_signed_version(CURRENT, "1.2.3", false).is_ok());
+        assert!(verify_signed_version(CURRENT, "1.2.3", true, None).is_ok());
+        assert!(verify_signed_version(CURRENT, "1.2.3", false, None).is_ok());
         // the endpoint and the CLI may spell the same version differently
-        assert!(verify_signed_version(CURRENT, "v1.2.3", true).is_ok());
+        assert!(verify_signed_version(CURRENT, "v1.2.3", true, None).is_ok());
     }
 
     #[test]
     fn rejects_a_version_the_artifact_was_not_signed_for() {
         // the rollback the flag exists to stop: an old artifact announced as a new version
-        let err = verify_signed_version(CURRENT, "9.9.9", false).unwrap_err();
+        let err = verify_signed_version(CURRENT, "9.9.9", false, None).unwrap_err();
         assert!(
             matches!(err, Error::SignedVersionMismatch { ref signed, ref announced }
                 if signed == "1.2.3" && announced == "9.9.9"),
@@ -2663,15 +2725,15 @@ mod tests {
         );
         // rejected regardless of whether the app opted in, since the signature does say
         // which version it covers
-        assert!(verify_signed_version(CURRENT, "9.9.9", true).is_err());
-        assert!(verify_signed_version(CURRENT, "1.2.4", true).is_err());
+        assert!(verify_signed_version(CURRENT, "9.9.9", true, None).is_err());
+        assert!(verify_signed_version(CURRENT, "1.2.4", true, None).is_err());
     }
 
     #[test]
     fn only_requires_a_signed_version_when_configured() {
-        assert!(verify_signed_version(LEGACY, "9.9.9", false).is_ok());
+        assert!(verify_signed_version(LEGACY, "9.9.9", false, None).is_ok());
         assert!(matches!(
-            verify_signed_version(LEGACY, "9.9.9", true).unwrap_err(),
+            verify_signed_version(LEGACY, "9.9.9", true, None).unwrap_err(),
             Error::MissingSignedVersion
         ));
     }
@@ -2679,8 +2741,63 @@ mod tests {
     #[test]
     fn compares_non_semver_versions_literally() {
         let comment = "timestamp:1700000000\tfile:app.zip\tversion:2024-01-01";
-        assert!(verify_signed_version(comment, "2024-01-01", true).is_ok());
-        assert!(verify_signed_version(comment, "2024-01-02", true).is_err());
+        assert!(verify_signed_version(comment, "2024-01-01", true, None).is_ok());
+        assert!(verify_signed_version(comment, "2024-01-02", true, None).is_err());
+    }
+
+    /// Drops a platform tag such as `win.` from the pre-release part: `1.2.3-win.4` -> `1.2.3-4`.
+    fn platform_tag_comparator() -> SignedVersionComparator {
+        std::sync::Arc::new(|signed, announced| {
+            let untagged = match signed.split_once('-') {
+                Some((version, pre)) => match pre.split_once('.') {
+                    Some((_tag, build)) => format!("{version}-{build}"),
+                    None => signed.to_string(),
+                },
+                None => signed.to_string(),
+            };
+            untagged == announced
+        })
+    }
+
+    #[test]
+    fn default_comparison_rejects_a_platform_tagged_version() {
+        let comment = "timestamp:1700000000\tfile:app.zip\tversion:2026.10.10-win.250";
+        assert!(matches!(
+            verify_signed_version(comment, "2026.10.10-250", false, None).unwrap_err(),
+            Error::SignedVersionMismatch { .. }
+        ));
+    }
+
+    #[test]
+    fn custom_comparator_replaces_the_default_comparison() {
+        let comparator = platform_tag_comparator();
+        let comment = "timestamp:1700000000\tfile:app.zip\tversion:2026.10.10-win.250";
+        for require in [true, false] {
+            assert!(
+                verify_signed_version(comment, "2026.10.10-250", require, Some(&comparator))
+                    .is_ok()
+            );
+        }
+
+        let older = "timestamp:1700000000\tfile:app.zip\tversion:2026.10.9-win.249";
+        let err =
+            verify_signed_version(older, "2026.10.10-250", false, Some(&comparator)).unwrap_err();
+        assert!(
+            matches!(err, Error::SignedVersionMismatch { ref signed, ref announced }
+                if signed == "2026.10.9-win.249" && announced == "2026.10.10-250"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn custom_comparator_is_not_consulted_without_a_signed_version() {
+        let comparator: SignedVersionComparator =
+            std::sync::Arc::new(|_, _| panic!("no signed version to compare"));
+        assert!(verify_signed_version(LEGACY, "9.9.9", false, Some(&comparator)).is_ok());
+        assert!(matches!(
+            verify_signed_version(LEGACY, "9.9.9", true, Some(&comparator)).unwrap_err(),
+            Error::MissingSignedVersion
+        ));
     }
 
     #[test]
