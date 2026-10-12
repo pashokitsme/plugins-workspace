@@ -990,6 +990,12 @@ impl Update {
         self.install_inner(bytes)
     }
 
+    /// Installs a package the user picked by hand, which has no manifest signature, without
+    /// verifying it. Everything else must use [`Self::install`].
+    pub fn install_unverified(&self, bytes: impl AsRef<[u8]>) -> Result<()> {
+        self.install_inner(bytes.as_ref())
+    }
+
     /// Installs the updater package like [`Self::install`], but never relaunches the app
     /// afterwards, regardless of [`Self::restart_after_install`].
     ///
