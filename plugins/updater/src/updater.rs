@@ -2588,6 +2588,51 @@ mod offline_tests {
         assert!(restored.context.config.require_signed_version);
     }
 
+    /// The parameters the NSIS and the MSI installer would be started with.
+    #[cfg(windows)]
+    fn windows_installer_parameters(restart_after_install: bool) -> (String, String) {
+        let mut update = updater()
+            .restore_update(manifest())
+            .unwrap()
+            .unwrap()
+            .restart_after_install(restart_after_install);
+        // the first argument is the executable itself, as in `std::env::args_os`
+        update.context.current_exe_args = vec!["app.exe".into(), "--flag".into()];
+
+        let nsis = WindowsUpdaterType::nsis(PathBuf::from("C:\\temp\\setup.exe"), None);
+        let msi = WindowsUpdaterType::msi(PathBuf::from("C:\\temp\\app.msi"), None);
+        (
+            update
+                .updater_parameters(&nsis)
+                .to_string_lossy()
+                .into_owned(),
+            update
+                .updater_parameters(&msi)
+                .to_string_lossy()
+                .into_owned(),
+        )
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn installer_relaunches_the_app_only_when_restart_after_install_is_set() {
+        let (nsis, msi) = windows_installer_parameters(true);
+        let nsis_args: Vec<&str> = nsis.split(' ').collect();
+        assert!(nsis_args.contains(&"/R"), "{nsis}");
+        assert!(nsis_args.contains(&"/ARGS"), "{nsis}");
+        assert!(msi.contains("AUTOLAUNCHAPP=True"), "{msi}");
+        assert!(msi.contains("LAUNCHAPPARGS="), "{msi}");
+
+        let (nsis, msi) = windows_installer_parameters(false);
+        let nsis_args: Vec<&str> = nsis.split(' ').collect();
+        assert!(nsis_args.contains(&"/UPDATE"), "{nsis}");
+        assert!(!nsis_args.contains(&"/R"), "{nsis}");
+        assert!(!nsis_args.contains(&"/ARGS"), "{nsis}");
+        assert!(msi.contains("/i"), "{msi}");
+        assert!(!msi.contains("AUTOLAUNCHAPP"), "{msi}");
+        assert!(!msi.contains("LAUNCHAPPARGS"), "{msi}");
+    }
+
     #[cfg(target_os = "linux")]
     const INSTALLED_APPIMAGE: &[u8] = b"\x7fELF installed AppImage";
 
