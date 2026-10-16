@@ -182,6 +182,9 @@ struct UpdaterContext {
     on_before_exit: Option<OnBeforeExit>,
     #[cfg(windows)]
     restart_after_install: bool,
+    /// Runs the installer with no window at all instead of the configured install mode.
+    #[cfg(windows)]
+    quiet_install: bool,
 }
 
 /// Builder for an [`Updater`] instance.
@@ -229,6 +232,8 @@ impl UpdaterBuilder {
                 on_before_exit: None,
                 #[cfg(windows)]
                 restart_after_install: true,
+                #[cfg(windows)]
+                quiet_install: false,
             },
             current_version: app.package_info().version.clone(),
             version_comparator: None,
@@ -1016,18 +1021,26 @@ impl Update {
         self.install_inner(bytes.as_ref())
     }
 
-    /// Installs the updater package like [`Self::install`], but never relaunches the app
-    /// afterwards, regardless of [`Self::restart_after_install`].
+    /// Installs the updater package like [`Self::install`] for an app that is quitting: no installer
+    /// window and no relaunch afterwards, whatever the configured install mode and
+    /// [`Self::restart_after_install`] say.
     ///
     /// ## Platform-specific:
     ///
     /// - **Windows:** This function exits the app after launching the updater installer
-    ///   successfully. The NSIS installer runs without `/R` and the MSI installer without
-    ///   `AUTOLAUNCHAPP=True`, so the new version is not started once the installation finishes.
-    /// - **macOS / Linux:** Same as [`Self::install`]: the app is never relaunched there, you
-    ///   need to relaunch it to run the newly installed version.
-    pub fn install_without_relaunch(&self, bytes: impl AsRef<[u8]>) -> Result<()> {
-        self.clone().restart_after_install(false).install(bytes)
+    ///   successfully. The NSIS installer runs with `/S` and without `/R`, the MSI installer with
+    ///   `/quiet` and without `AUTOLAUNCHAPP=True`. A per-machine installer that needs elevation
+    ///   cannot run quietly; per-user installs (the NSIS default) need none.
+    /// - **macOS / Linux:** Same as [`Self::install`]: there is no installer window and the app is
+    ///   never relaunched there.
+    pub fn install_in_background(&self, bytes: impl AsRef<[u8]>) -> Result<()> {
+        #[cfg_attr(not(windows), allow(unused_mut))]
+        let mut update = self.clone().restart_after_install(false);
+        #[cfg(windows)]
+        {
+            update.context.quiet_install = true;
+        }
+        update.install(bytes)
     }
 
     /// Downloads and installs the updater package
@@ -1157,7 +1170,11 @@ impl Update {
     }
 
     fn updater_parameters(&self, updater_type: &WindowsUpdaterType) -> OsString {
-        let install_mode = self.context.config.install_mode();
+        let install_mode = if self.context.quiet_install {
+            crate::config::WindowsUpdateInstallMode::Quiet
+        } else {
+            self.context.config.install_mode()
+        };
         let current_args = &self.context.current_exe_args[1..];
 
         match updater_type {
@@ -2591,11 +2608,16 @@ mod offline_tests {
     /// The parameters the NSIS and the MSI installer would be started with.
     #[cfg(windows)]
     fn windows_installer_parameters(restart_after_install: bool) -> (String, String) {
-        let mut update = updater()
+        let update = updater()
             .restore_update(manifest())
             .unwrap()
             .unwrap()
             .restart_after_install(restart_after_install);
+        installer_parameters_of(update)
+    }
+
+    #[cfg(windows)]
+    fn installer_parameters_of(mut update: Update) -> (String, String) {
         // the first argument is the executable itself, as in `std::env::args_os`
         update.context.current_exe_args = vec!["app.exe".into(), "--flag".into()];
 
@@ -2631,6 +2653,31 @@ mod offline_tests {
         assert!(msi.contains("/i"), "{msi}");
         assert!(!msi.contains("AUTOLAUNCHAPP"), "{msi}");
         assert!(!msi.contains("LAUNCHAPPARGS"), "{msi}");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn a_background_install_runs_the_installer_quietly_and_without_relaunch() {
+        let mut update = updater()
+            .restore_update(manifest())
+            .unwrap()
+            .unwrap()
+            .restart_after_install(false);
+        update.context.quiet_install = true;
+        let (nsis, msi) = installer_parameters_of(update);
+        let nsis_args: Vec<&str> = nsis.split(' ').collect();
+        assert!(nsis_args.contains(&"/S"), "{nsis}");
+        assert!(!nsis_args.contains(&"/P"), "{nsis}");
+        assert!(!nsis_args.contains(&"/R"), "{nsis}");
+        assert!(msi.contains("/quiet"), "{msi}");
+        assert!(!msi.contains("/passive"), "{msi}");
+        assert!(!msi.contains("AUTOLAUNCHAPP"), "{msi}");
+
+        let (nsis, _) = windows_installer_parameters(false);
+        assert!(
+            nsis.split(' ').any(|arg| arg == "/P"),
+            "the configured passive mode stays for other installs: {nsis}"
+        );
     }
 
     #[cfg(target_os = "linux")]

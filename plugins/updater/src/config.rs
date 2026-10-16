@@ -225,7 +225,7 @@ mod tests {
     use super::WindowsUpdateInstallMode;
 
     // `/R` makes the NSIS installer relaunch the app, so it must only come from
-    // `nsis_restart_after_install_args`, which `Update::install_without_relaunch` skips.
+    // `nsis_restart_after_install_args`, which `Update::install_in_background` skips.
     #[test]
     fn nsis_base_args_do_not_relaunch_the_app() {
         for mode in [
